@@ -6,7 +6,7 @@ In the PISA study, students were tested in three disciplines:
 - Reading
 - Science
 
-Results for male and female students are logged separetely in the dataset.
+Results for male and female students are logged separately in the dataset.
 
 I examined the following factors to conclude whether they affected the students' performance:
 - Country
