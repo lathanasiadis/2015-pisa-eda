@@ -1,0 +1,232 @@
+```{r, message = FALSE}
+library(data.table)
+library(ggplot2)
+library(countrycode)
+library(maps)
+```
+
+Test code variables.
+
+```{r}
+MATH <- "LO.PISA.MAT"
+MATH_M <- "LO.PISA.MAT.MA"
+MATH_F <- "LO.PISA.MAT.FE"
+READ <- "LO.PISA.REA"
+READ_M <- "LO.PISA.REA.MA"
+READ_F <- "LO.PISA.REA.FE"
+SCI <- "LO.PISA.SCI"
+SCI_M <- "LO.PISA.SCI.MA"
+SCI_F <- "LO.PISA.SCI.FE"
+```
+
+Read dataset, change column names, drop the column that explains the test codes.
+Examine if there are countries with incomplete data in the dataset (there aren't).
+
+```{r}
+DT <- fread("pisa2015.csv", header = TRUE, na.strings = "..")
+names(DT) <- c("Country", "CountryCode", "Test", "TestCode", "Score")
+DT[, Test:=NULL]
+
+has_na <- subset(DT, is.na(Score) == TRUE)
+has_na <- has_na[, .N != 9, CountryCode]
+has_na[V1 != FALSE]
+```
+
+Drop NA.
+
+```{r}
+DT <- na.omit(DT)
+```
+
+Add Region and EU membership columns to the dataset.
+
+```{r, warning=FALSE}
+DT$Region <- countrycode(DT$CountryCode, "iso3c", "region")
+# following hack is needed because countrycode returns "EU" or NA
+# instead of true or false
+DT$EU <- FALSE
+DT[!is.na(countrycode(CountryCode, "iso3c", "eu28"))]$EU <- TRUE
+```
+
+Examine how many countries participated in the study from each region.
+
+```{r}
+# Create new col with how many countries participated from each region
+region_cnt <- DT[, .(Participating = .N/9), Region]
+# region_cnt[order(-Participating)]
+# Get a count of how many countries are in each region
+# using codelist, a dataframe provided by the countrycode package
+all_regions <- data.table(Region = na.omit(codelist$region))
+all_regions_cnt <- all_regions[, .(All = .N), Region]
+# Join
+region_cnt <- region_cnt[all_regions_cnt, on=.(Region)]
+# replace NAs with 0
+region_cnt[is.na(Participating)]$Participating <- 0
+region_cnt <- region_cnt[, .(ParticipatingRatio = round(Participating/All,2)), Region]
+region_cnt[order(-ParticipatingRatio)]
+```
+
+Split into two data tables: one containing the average result of both genders
+and one containing a Gender column (instead of having a different test code for
+the results of each gender).
+
+```{r}
+mean_scores <- DT[TestCode == MATH | TestCode == READ | TestCode == SCI]
+
+dt_gendered <- DT[TestCode != SCI & TestCode != MATH & TestCode != READ]
+dt_gendered$Gender <- "Male"
+dt_gendered[TestCode == MATH_F | TestCode == READ_F | TestCode == SCI_F]$Gender <- "Female"
+dt_gendered[startsWith(TestCode, MATH)]$TestCode <- MATH
+dt_gendered[startsWith(TestCode, READ)]$TestCode <- READ
+dt_gendered[startsWith(TestCode, SCI)]$TestCode <- SCI
+```
+
+Create a new data table with the mean result of both genders at every discipline
+for every country.
+
+```{r}
+one_mean <- mean_scores[, .(Score = mean(Score)), Country]
+
+# Change some country names to match with the ones
+# returned by map_data
+
+change_name <- function(DT, old, new){
+    DT[Country == old, "Country" := new]
+}
+
+updates <- list(c("Russian Federation", "Russia"),
+     c("United States", "USA"),
+     c("United Kingdom", "UK"),
+     c("Macedonia, FYR", "North Macedonia"),
+     c("Korea, Rep.", "South Korea"))
+
+for (pair in updates){
+    change_name(one_mean, pair[1], pair[2])
+}
+
+# Load map data, get a data table of all countries
+# and join it with one_mean
+
+wmap <- setDT(map_data("world", wrap = c(-180, 180)))
+all_countries <- data.table(Country = unique(wmap$region))
+plot_dt <- one_mean[all_countries, on = "Country"]
+```
+
+Bin the mean scores and plot them on a world map.
+
+```{r}
+discrete_values <- seq(300, 550, 50)
+plot_dt$Discrete = cut(plot_dt$Score, breaks = discrete_values)
+
+legend <- c()
+for (i in 1:(length(discrete_values) - 2)){
+    legend <- append(legend, paste(discrete_values[i], "-", discrete_values[i+1]))
+}
+legend <- append(legend, c("> 500", "No Data"))
+
+
+
+p <- ggplot(plot_dt, aes(map_id = Country)) +
+    geom_map(aes(fill = Discrete), map = wmap, color = "black", linewidth = 0.05) + expand_limits(x = wmap$long, y = wmap$lat) + 
+    scale_fill_brewer(palette = "RdYlBu", na.value = "lightgrey", name = "Mean Exam Score",
+                      labels = legend) + 
+    coord_cartesian() + 
+    theme_void() +
+    theme(legend.position = "bottom")
+p
+# ggsave("pisa_world.svg", plot = p, width = 14, height = 7)
+# ggsave("pisa_world.png", plot = p, width = 14, height = 7, bg = "white")
+```
+Examine the mean exam score in histogram form.
+
+```{r}
+p <- ggplot(na.omit(plot_dt)) + 
+    geom_histogram(aes(x = Score, fill=Discrete), binwidth = 10, color = "black") + 
+    scale_y_continuous(breaks = seq(0,20,2), labels=seq(0,20,2)) + 
+    scale_fill_brewer(palette = "RdYlBu") +
+    theme(legend.position = "none") + 
+    labs(x = "Mean Exam Score", y = "Count")
+p 
+# ggsave("mean_hist.png", p, width = 7, height = 4)
+```
+Same plot, but with a density curve added.
+
+```{r}
+p <- ggplot(na.omit(plot_dt)) + 
+    geom_histogram(aes(x = Score, y = after_stat(density)), bins = 20, color = "deepskyblue", fill = "white") + 
+    geom_density(aes(x = Score), color = "mediumblue") + 
+    labs(x = "Mean Exam Score", y = "Density")
+p 
+# ggsave("hist_density.png", p, width = 7, height = 4)
+```
+
+Boxplots of the performance of each region.
+
+```{r}
+test_labels <- c("Math", "Reading", "Science")
+names(test_labels) <- c(MATH, READ, SCI)
+
+p <- ggplot(mean_scores) + 
+    geom_boxplot(aes(x = TestCode, y = Score)) + 
+    facet_wrap(facets = vars(Region)) + 
+    scale_x_discrete(labels = test_labels) + 
+    labs(x = "Discipline", y = "Score")
+
+p 
+# ggsave("regions.png", p, width = 7, height = 4)
+```
+
+Boxplots of the performance of the EU countries compared to the rest of the world.
+
+```{r}
+# custom labels instead of true or false
+facet_labels <- c(`TRUE` = "EU Members", `FALSE` = "Rest of the World")
+
+p <- ggplot(mean_scores) + 
+    geom_boxplot(aes(x = TestCode, y = Score)) + 
+    # change to factor in order to fix the order of the facets
+    facet_wrap(~factor(EU, levels = c(TRUE, FALSE)), labeller = as_labeller(facet_labels)) + 
+    scale_x_discrete(labels = test_labels) + 
+    labs(x = "Discipline", y = "Score")
+p 
+# ggsave("eu.png", p, width = 7, height = 4)
+```
+Boxplots of the performance of each gender at each discipline.
+
+```{r}
+p <- ggplot(dt_gendered) + 
+    geom_boxplot(aes(x = TestCode, y = Score, color = Gender)) + 
+    scale_x_discrete(labels = test_labels) + 
+    labs(x = "Discipline", y = "Score")
+
+p
+# ggsave("gender-boxplots.png", p, width = 7, height = 4)
+```
+Same plot, but separately for each region (using ggplot's facets).
+
+```{r}
+p <- ggplot(dt_gendered) + 
+    geom_boxplot(aes(x = TestCode, y = Score, color = Gender)) + 
+    facet_wrap(~Region) + 
+    scale_x_discrete(labels = test_labels) + 
+    labs(x = "Discipline", y = "Score")
+
+p
+# ggsave("gender-facets.png", width = 7, height = 4)
+```
+
+Same plot, but seperately for EU countries and the rest of the world (again,
+using ggplot's facets).
+
+```{r}
+p <- ggplot(dt_gendered) + 
+    geom_boxplot(aes(x = TestCode, y = Score, color = Gender)) + 
+    # change to factor in order to fix the order of the facets
+    facet_wrap(~factor(EU, levels = c(TRUE, FALSE)), labeller = as_labeller(facet_labels)) + 
+    scale_x_discrete(labels = test_labels) + 
+    labs(x = "Discipline", y = "Score")
+p 
+ggsave("eu-gender-facets.png", p, width = 7, height = 4)
+```
+
+
